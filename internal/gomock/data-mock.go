@@ -416,7 +416,7 @@ func CreateReceipts(ctx context.Context, db *pgxpool.Pool) error {
 		_, err := db.Exec(ctx, `INSERT INTO receipts (order_id, bonus_points_spent, total_paid)
             VALUES ($1, $2, $3)`, receiptDTO.OrderId, spentBonusPoints, receiptDTO.TotalCost-spentBonusPoints)
 		if err != nil {
-			return fmt.Errorf("Error insert receipt %w", err)
+			return fmt.Errorf("error insert receipt %w", err)
 		}
 	}
 	return nil
