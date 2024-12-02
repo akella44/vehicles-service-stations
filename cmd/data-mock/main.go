@@ -3,61 +3,73 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"os"
 	"sync"
 	"time"
+	"vehicles-service-stations/config"
 	"vehicles-service-stations/internal/db"
 	"vehicles-service-stations/internal/gomock"
 	"vehicles-service-stations/internal/model"
 )
 
-const (
-	dbIP   = "192.168.1.62"
-	dbPort = 5432
-	dbName = "edu"
+var (
+	skipAdminInit         bool
+	skipEmployeesCreation bool
+	employeesCount        int
+	ordersCount           int
+	customersCount        int
+	serviceCentersCount   int
 )
 
 func main() {
+	flag.BoolVar(&skipAdminInit, "skip-admin-init", false, "Skip initializing admin")
+	flag.BoolVar(&skipEmployeesCreation, "skip-employees-creation", false, "Create additional employees")
+	flag.IntVar(&employeesCount, "ec", 150, "Number of additional employees to create")
+	flag.IntVar(&ordersCount, "oc", 200, "Number of additional orders to create")
+	flag.IntVar(&customersCount, "cc", 100, "Number of additional customers to create")
+	flag.IntVar(&serviceCentersCount, "sc", 50, "Number of additional service centers to create")
+	flag.Parse()
+
+	env_cfg, err := config.LoadConfig()
+	if err != nil {
+		log.Fatalf("Ошибка создания конфигурации: %v", err)
+		panic("error during cfg loading")
+	}
 	cfg, err := db.NewConfig(
-		dbIP,
-		dbPort,
-		"arklim",
-		"qwerty",
-		dbName,
+		env_cfg,
+		env_cfg.DbSuperuser,
+		env_cfg.DbPassword,
 	)
 	if err != nil {
 		log.Fatalf("Ошибка создания конфигурации: %v", err)
 	}
 
 	connManager := db.NewConnectionManager()
-	if err != nil {
-		log.Fatalf("Ошибка создания менеджера соединений: %v", err)
-	}
-
 	connManager.AddPool(context.Background(), "superuser", cfg.ConnectionString())
 
 	defer connManager.CloseAll()
 
 	log.Println("Creating service centers...")
-	if err := gomock.CreateServiceCenters(context.Background(), connManager.GetPool("superuser"), 3, 10); err != nil {
+	if err := gomock.CreateServiceCenters(context.Background(), connManager.GetPool("superuser"), 3, serviceCentersCount); err != nil {
 		log.Fatalf("Create service centers err %v", err)
 	}
 	log.Println("Creating service centers done")
 
 	log.Println("Initing admin...")
-	if err := gomock.InitAdmin(context.Background(), connManager.GetPool("superuser")); err != nil {
-		log.Fatalf("Init admin err %v", err)
+	if !skipAdminInit {
+		if err := gomock.InitAdmin(context.Background(), connManager.GetPool("superuser")); err != nil {
+			log.Fatalf("Init admin err %v", err)
+		}
 	}
 	log.Println("Init admin done")
 
 	cfg, err = db.NewConfig(
-		dbIP,
-		dbPort,
+		env_cfg,
 		"admin_user",
 		"StrongPassword123!",
-		dbName,
 	)
 	if err != nil {
 		log.Fatalf("Ошибка создания конфигурации: %v", err)
@@ -97,7 +109,7 @@ func main() {
 		default:
 		}
 		log.Println("Creating customers...")
-		if err := gomock.CreateCustomers(ctx, connManager.GetPool("superuser"), 100, 150000.0); err != nil {
+		if err := gomock.CreateCustomers(ctx, connManager.GetPool("superuser"), customersCount, 150000.0); err != nil {
 			errCh <- err
 		}
 		log.Println("Creating customers done")
@@ -131,12 +143,13 @@ func main() {
 		default:
 		}
 		log.Println("Creating employees...")
-		if err := gomock.CreateEmployees(ctx, connManager.GetPool("admin"), 150, &users); err != nil {
-			errCh <- err
+		if !skipEmployeesCreation {
+			if err := gomock.CreateEmployees(ctx, connManager.GetPool("admin"), employeesCount, &users); err != nil {
+				errCh <- err
+			}
 		}
 		log.Println("Creating employees done")
 		log.Println("Saving users cred to file...")
-		log.Println(users)
 		file, err := os.Create("/tmp/creds.json")
 		if err != nil {
 			errCh <- fmt.Errorf("error while creation db users cred file")
@@ -179,9 +192,14 @@ func main() {
 	}
 	wg.Wait()
 	log.Println("Creating orders...")
-	if err := gomock.CreateOrders(ctx, connManager.GetPool("superuser"), 200, &gomock.Pair[float64]{First: 500.0, Second: 500000.0}, 5, 2); err != nil {
-		log.Fatalf("Err while executing mock func %v", err)
+	if err := gomock.CreateOrders(ctx, connManager.GetPool("superuser"), ordersCount, &gomock.Pair[float64]{First: 500.0, Second: 500000.0}, 5, 2); err != nil {
+		log.Fatalf("Err while executing creation of orders mock func %v", err)
 	}
 	log.Println("Creating orders done")
+	log.Println("Creating receipts for completed orders...")
+	if err := gomock.CreateReceipts(ctx, connManager.GetPool("superuser")); err != nil {
+		log.Fatalf("Err while executing creation of receipts mock func %v", err)
+	}
+	log.Println("Creating receipts done")
 	log.Println("No problem found, the end")
 }

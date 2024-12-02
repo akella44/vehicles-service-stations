@@ -514,24 +514,74 @@ ON customers
 FOR EACH ROW
 EXECUTE FUNCTION update_loyalty_status();
 
-CREATE OR REPLACE FUNCTION update_spent_money_on_order_completion()
-RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION update_order_total_cost() RETURNS TRIGGER AS $$
 BEGIN
-    IF NEW.status = 'Completed' AND OLD.status IS DISTINCT FROM NEW.status THEN
-        UPDATE customers
-        SET spent_money = spent_money + NEW.total_cost
-        WHERE customer_id = NEW.customer_id;
-    END IF;
+    UPDATE orders
+    SET total_cost = (
+        COALESCE((
+            SELECT SUM(s.price)
+            FROM service_order so
+            JOIN services s ON so.service_id = s.service_id
+            WHERE so.order_id = NEW.order_id
+        ), 0)
+        +
+        COALESCE((
+            SELECT SUM(spo.purchase_price * spo.quantity)
+            FROM spare_part_order spo
+            WHERE spo.order_id = NEW.order_id
+        ), 0)
+    )
+    WHERE order_id = NEW.order_id;
 
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER update_total_cost_service_order_trigger
+AFTER INSERT ON service_order
+FOR EACH ROW
+EXECUTE FUNCTION update_order_total_cost();
+
+CREATE TRIGGER update_total_cost_spare_part_order_trigger
+AFTER INSERT ON spare_part_order
+FOR EACH ROW
+EXECUTE FUNCTION update_order_total_cost();
+
+CREATE OR REPLACE FUNCTION update_customer_on_receipt()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_customer_id INT;
+BEGIN
+    -- Fetch the customer_id from the orders table using the order_id from the new receipt
+    SELECT customer_id INTO v_customer_id
+    FROM orders
+    WHERE order_id = NEW.order_id;
+    
+    -- Ensure that the order exists and customer_id was found
+    IF v_customer_id IS NULL THEN
+        RAISE EXCEPTION 'Order with order_id % does not exist.', NEW.order_id;
+    END IF;
+    
+    -- Update the customers table using the renamed variable
+    UPDATE customers
+    SET
+        spent_money = spent_money + NEW.total_paid,
+        bonus_points = bonus_points - NEW.bonus_points_spent
+    WHERE customer_id = v_customer_id;
+    
+    -- Ensure that bonus_points do not go negative
+    IF (SELECT bonus_points FROM customers WHERE customer_id = v_customer_id) < 0 THEN
+        RAISE EXCEPTION 'Customer % has insufficient bonus points.', v_customer_id;
+    END IF;
+    
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER update_spent_money_trigger
-AFTER UPDATE OF status
-ON orders
+CREATE TRIGGER update_customer_after_receipt_trigger
+AFTER INSERT ON receipts
 FOR EACH ROW
-EXECUTE FUNCTION update_spent_money_on_order_completion();
+EXECUTE FUNCTION update_customer_on_receipt();
 
 CREATE OR REPLACE FUNCTION update_bonus_points()
 RETURNS TRIGGER AS $$
@@ -558,7 +608,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER update_bonus_points_triggers
+CREATE TRIGGER update_bonus_points_trigger
 BEFORE UPDATE OF spent_money ON customers
 FOR EACH ROW
 EXECUTE FUNCTION update_bonus_points();

@@ -4,27 +4,25 @@ import (
 	"fmt"
 
 	_ "github.com/lib/pq"
+
+	"vehicles-service-stations/config"
 )
 
 type Config struct {
 	Addr     string
-	Port     uint16
+	Port     int
 	User     string
 	Password string
 	DBName   string
 }
 
-func NewConfig(addr string, port uint16, user, password, dbName string) (*Config, error) {
-	if addr == "" || port == 0 || user == "" || dbName == "" {
-		return nil, fmt.Errorf("invalid values, one of fileds is empty")
-	}
-
+func NewConfig(envConfig *config.Config, user, password string) (*Config, error) {
 	config := &Config{
-		Addr:     addr,
-		Port:     port,
+		Addr:     envConfig.DbIp,
+		Port:     envConfig.DbPort,
 		User:     user,
 		Password: password,
-		DBName:   dbName,
+		DBName:   envConfig.DbName,
 	}
 
 	return config, nil

@@ -210,7 +210,17 @@ func CreateOrders(ctx context.Context, db *pgxpool.Pool, createOrdersTries int, 
 	}
 
 	for i := 0; i < createOrdersTries; i++ {
-		serviceCenterId, err := utils.RandomIDWithBuilder(ctx, db, "employee_service_center", "service_center_id")
+		var serviceCenterId int
+		err := db.QueryRow(ctx, `
+			SELECT service_center_id
+			FROM employee_service_center
+			WHERE employee_role IN ('Manager', 'Master')
+			GROUP BY service_center_id
+			HAVING COUNT(DISTINCT employee_role) > 1
+			ORDER BY RANDOM()
+			LIMIT 1;
+		`).Scan(&serviceCenterId)
+
 		if err != nil {
 			log.Fatal("Error getting service center:", err)
 			continue
@@ -233,7 +243,7 @@ func CreateOrders(ctx context.Context, db *pgxpool.Pool, createOrdersTries int, 
 			utils.WithJoins(joins), utils.WithWhereClause(whereClause))
 
 		if err != nil {
-			log.Fatal("Error getting master in service center:", err)
+			log.Println("Error getting master in service center", err)
 			continue
 		}
 
@@ -245,22 +255,22 @@ func CreateOrders(ctx context.Context, db *pgxpool.Pool, createOrdersTries int, 
 		managerId, err := utils.RandomIDWithBuilder(ctx, db, "employees", "employee_id",
 			utils.WithJoins(joins), utils.WithWhereClause(whereClause))
 		if err != nil {
-			log.Fatal("Error getting meneger in service center:", err)
+			log.Println("Error getting meneger in service center", err)
 			continue
 		}
 		customerId, err := utils.RandomIDWithBuilder(ctx, db, "customers", "customer_id")
 		if err != nil {
-			log.Fatal("Error getting customer:", err)
+			log.Println("Error getting customer", err)
 			continue
 		}
-
+		orderStatuses := []string{"Pending", "In Progress", "Completed"}
 		var orderID int
 		err = tx.QueryRow(ctx, `
 			INSERT INTO orders
-			(customer_id, service_center_id, manager_id, assigned_master_id, scheduled_date)
-			VALUES ($1, $2, $3, $4, $5)
+			(customer_id, service_center_id, manager_id, assigned_master_id, scheduled_date, status)
+			VALUES ($1, $2, $3, $4, $5, $6)
 			RETURNING order_id`,
-			customerId, serviceCenterId, managerId, masterId, gofakeit.FutureDate()).Scan(&orderID)
+			customerId, serviceCenterId, managerId, masterId, gofakeit.FutureDate(), orderStatuses[rand.IntN(len(orderStatuses))]).Scan(&orderID)
 
 		if err != nil {
 			return fmt.Errorf("failed to insert order %d: %v", i+1, err)
@@ -323,11 +333,9 @@ func CreateOrders(ctx context.Context, db *pgxpool.Pool, createOrdersTries int, 
 			}
 		}
 	}
-
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-
 	return nil
 }
 
@@ -341,8 +349,11 @@ func InitAdmin(ctx context.Context, db *pgxpool.Pool) error {
 	if count > 0 {
 		return fmt.Errorf("admin already exist")
 	}
-
-	file, err := os.Open("/home/arklim/vehicles-service-stations/internal/gomock/scripts/init_admin.sql")
+	currPath, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	file, err := os.Open(fmt.Sprintf("%s/internal/gomock/scripts/init_admin.sql", currPath))
 	if err != nil {
 		return fmt.Errorf("file open err: %w", err)
 	}
@@ -357,6 +368,56 @@ func InitAdmin(ctx context.Context, db *pgxpool.Pool) error {
 
 	if err != nil {
 		return fmt.Errorf("admin inserting err: %v", err)
+	}
+	return nil
+}
+
+func CreateReceipts(ctx context.Context, db *pgxpool.Pool) error {
+	type receiptDTO struct {
+		OrderId     int
+		BonusPoints float64
+		TotalCost   float64
+	}
+	var receiptDTOs []receiptDTO
+
+	rows, err := db.Query(ctx, `
+        SELECT o.order_id, o.total_cost, c.bonus_points
+        FROM orders o
+        JOIN customers c ON o.customer_id = c.customer_id
+        LEFT JOIN receipts r ON o.order_id = r.order_id
+        WHERE o.status = 'Completed' AND r.order_id IS NULL
+    `)
+
+	if err != nil {
+		return fmt.Errorf("failed to query completed orders: %w", err)
+	}
+
+	for rows.Next() {
+		var ro receiptDTO
+		if err := rows.Scan(&ro.OrderId, &ro.TotalCost, &ro.BonusPoints); err != nil {
+			return fmt.Errorf("failed to scan order: %w", err)
+		}
+		receiptDTOs = append(receiptDTOs, ro)
+	}
+
+	for _, receiptDTO := range receiptDTOs {
+		var existingReceiptID int
+		err = db.QueryRow(ctx, `
+			SELECT receipt_id
+			FROM receipts
+			WHERE order_id = $1
+			LIMIT 1
+		`, receiptDTO.OrderId).Scan(&existingReceiptID)
+		if err == nil {
+			continue
+		}
+
+		spentBonusPoints := receiptDTO.BonusPoints * (rand.Float64()*0.9 + 0.1)
+		_, err := db.Exec(ctx, `INSERT INTO receipts (order_id, bonus_points_spent, total_paid)
+            VALUES ($1, $2, $3)`, receiptDTO.OrderId, spentBonusPoints, receiptDTO.TotalCost-spentBonusPoints)
+		if err != nil {
+			return fmt.Errorf("Error insert receipt %w", err)
+		}
 	}
 	return nil
 }
