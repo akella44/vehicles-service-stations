@@ -137,6 +137,78 @@ CREATE TABLE IF NOT EXISTS receipts (
             ON UPDATE CASCADE
 );
 
+CREATE OR REPLACE VIEW bookings_by_date AS
+SELECT
+    scheduled_date,
+    COUNT(*) AS total_bookings
+FROM
+    orders
+GROUP BY
+    scheduled_date
+ORDER BY
+    scheduled_date;
+
+CREATE OR REPLACE VIEW most_demanded_services AS
+SELECT
+    s.service_id,
+    s.full_name AS service_name,
+    COUNT(so.order_id) AS demand_count
+FROM
+    services s
+JOIN
+    service_order so ON s.service_id = so.service_id
+GROUP BY
+    s.service_id, s.full_name
+ORDER BY
+    demand_count DESC;
+
+CREATE OR REPLACE VIEW revenue_by_date AS
+SELECT
+    creation_date::date AS revenue_date,
+    SUM(total_cost) AS total_revenue
+FROM
+    orders
+WHERE
+    status = 'Completed'
+GROUP BY
+    revenue_date
+ORDER BY
+    revenue_date;
+
+CREATE OR REPLACE VIEW employee_performance AS
+SELECT
+    e.employee_id,
+    e.full_name,
+    COUNT(o.order_id) AS orders_handled,
+    SUM(o.total_cost) AS total_revenue_generated
+FROM
+    employees e
+JOIN
+    orders o ON e.employee_id = o.assigned_master_id
+WHERE
+    o.status = 'Completed'
+GROUP BY
+    e.employee_id, e.full_name
+ORDER BY
+    orders_handled DESC;
+
+CREATE OR REPLACE VIEW service_center_performance AS
+SELECT
+    sc.service_center_id,
+    sc.full_address,
+    COUNT(o.order_id) AS total_orders,
+    SUM(o.total_cost) AS total_revenue
+FROM
+    service_centers sc
+JOIN
+    orders o ON sc.service_center_id = o.service_center_id
+WHERE
+    o.status = 'Completed'
+GROUP BY
+    sc.service_center_id, sc.full_address
+ORDER BY
+    total_orders DESC;
+
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS pg_cron;
 
@@ -410,7 +482,6 @@ CREATE POLICY manager_customers_update_policy ON customers
     TO manager
     USING (true);
 
-
 CREATE POLICY manager_customers_insert_policy ON customers
     FOR INSERT
     TO manager
@@ -552,24 +623,20 @@ RETURNS TRIGGER AS $$
 DECLARE
     v_customer_id INT;
 BEGIN
-    -- Fetch the customer_id from the orders table using the order_id from the new receipt
     SELECT customer_id INTO v_customer_id
     FROM orders
     WHERE order_id = NEW.order_id;
     
-    -- Ensure that the order exists and customer_id was found
     IF v_customer_id IS NULL THEN
         RAISE EXCEPTION 'Order with order_id % does not exist.', NEW.order_id;
     END IF;
     
-    -- Update the customers table using the renamed variable
     UPDATE customers
     SET
         spent_money = spent_money + NEW.total_paid,
         bonus_points = bonus_points - NEW.bonus_points_spent
     WHERE customer_id = v_customer_id;
-    
-    -- Ensure that bonus_points do not go negative
+
     IF (SELECT bonus_points FROM customers WHERE customer_id = v_customer_id) < 0 THEN
         RAISE EXCEPTION 'Customer % has insufficient bonus points.', v_customer_id;
     END IF;
