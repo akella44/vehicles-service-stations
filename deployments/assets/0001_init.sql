@@ -125,7 +125,7 @@ CREATE TABLE IF NOT EXISTS spare_part_order (
 
 CREATE TABLE IF NOT EXISTS receipts (
     receipt_id SERIAL PRIMARY KEY,
-    order_id INT NOT NULL,
+    order_id INT NOT NULL UNIQUE,
     bonus_points_spent NUMERIC(12, 2) NOT NULL DEFAULT 0 CHECK (bonus_points_spent >= 0),
     total_paid NUMERIC(12, 2) NOT NULL DEFAULT 0 CHECK (total_paid >= 0),
     receipt_date TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
