@@ -233,13 +233,13 @@ DO $$ BEGIN
     END IF;
 END $$;
 
-GRANT USAGE ON SCHEMA public TO administrator;
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO administrator;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO administrator;
-
 GRANT manager TO administrator WITH ADMIN OPTION;
 GRANT master TO administrator WITH ADMIN OPTION;
 GRANT analyst TO administrator WITH ADMIN OPTION;
+
+GRANT USAGE ON SCHEMA public TO administrator;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO administrator;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO administrator;
 
 GRANT USAGE ON SCHEMA public TO analyst;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO analyst;
@@ -715,53 +715,6 @@ SELECT cron.schedule(
     '0 0 * * *',
     'SELECT reset_inactive_bonus_points();'
 );
-
-CREATE OR REPLACE FUNCTION check_order_roles()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM employee_service_center esc
-        JOIN employees e ON esc.employee_id = e.employee_id
-        WHERE esc.service_center_id = NEW.service_center_id
-          AND esc.employee_role = 'Manager'
-          AND esc.employee_id = NEW.manager_id
-    ) THEN
-        RAISE EXCEPTION 'Manager with employee_id % does not have role Manager in service_center_id %.', NEW.manager_id, NEW.service_center_id;
-    END IF;
-    
-    IF NOT EXISTS (
-        SELECT 1
-        FROM employee_service_center esc
-        JOIN employees e ON esc.employee_id = e.employee_id
-        WHERE esc.service_center_id = NEW.service_center_id
-          AND esc.employee_role = 'Master'
-          AND esc.employee_id = NEW.assigned_master_id
-    ) THEN
-        RAISE EXCEPTION 'Assigned Master with employee_id % does not have role Master in service_center_id %.', NEW.assigned_master_id, NEW.service_center_id;
-    END IF;
-    
-    IF NEW.reassigned_master_id IS NOT NULL THEN
-        IF NOT EXISTS (
-            SELECT 1
-            FROM employee_service_center esc
-            JOIN employees e ON esc.employee_id = e.employee_id
-            WHERE esc.service_center_id = NEW.service_center_id
-              AND esc.employee_role = 'Master'
-              AND esc.employee_id = NEW.reassigned_master_id
-        ) THEN
-            RAISE EXCEPTION 'Reassigned Master with employee_id % does not have role Master in service_center_id %.', NEW.reassigned_master_id, NEW.service_center_id;
-        END IF;
-    END IF;
-    
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER check_order_roles_trigger
-BEFORE INSERT OR UPDATE ON orders
-FOR EACH ROW
-EXECUTE FUNCTION check_order_roles();
 
 CREATE OR REPLACE FUNCTION update_employees_count()
 RETURNS TRIGGER AS $$

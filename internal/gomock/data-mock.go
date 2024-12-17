@@ -268,10 +268,10 @@ func CreateOrders(ctx context.Context, db *pgxpool.Pool, createOrdersTries int, 
 		var orderID int
 		err = tx.QueryRow(ctx, `
 			INSERT INTO orders
-			(customer_id, service_center_id, manager_id, assigned_master_id, scheduled_date, status)
-			VALUES ($1, $2, $3, $4, $5, $6)
+			(customer_id, service_center_id, manager_id, assigned_master_id, scheduled_date, status, creation_date)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
 			RETURNING order_id`,
-			customerId, serviceCenterId, managerId, masterId, gofakeit.FutureDate().Add(time.Hour*24*time.Duration(rand.IntN(20))), orderStatuses[rand.IntN(len(orderStatuses))]).Scan(&orderID)
+			customerId, serviceCenterId, managerId, masterId, gofakeit.FutureDate().Add(time.Hour*24*time.Duration(rand.IntN(20))), orderStatuses[rand.IntN(len(orderStatuses))], gofakeit.PastDate().Add(-time.Hour*24*time.Duration(rand.IntN(20)))).Scan(&orderID)
 		if err != nil {
 			return fmt.Errorf("failed to insert order %d: %v", i+1, err)
 		}
