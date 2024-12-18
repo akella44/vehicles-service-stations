@@ -1,4 +1,3 @@
-
 DO $$ BEGIN
     IF to_regtype('loyalty_status') IS NULL THEN
         CREATE TYPE loyalty_status AS ENUM ('Bronze', 'Silver', 'Gold', 'Platinum');
@@ -125,7 +124,7 @@ CREATE TABLE IF NOT EXISTS spare_part_order (
 
 CREATE TABLE IF NOT EXISTS receipts (
     receipt_id SERIAL PRIMARY KEY,
-    order_id INT NOT NULL UNIQUE,
+    order_id INT NOT NULL   ,
     bonus_points_spent NUMERIC(12, 2) NOT NULL DEFAULT 0 CHECK (bonus_points_spent >= 0),
     total_paid NUMERIC(12, 2) NOT NULL DEFAULT 0 CHECK (total_paid >= 0),
     receipt_date TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -136,6 +135,11 @@ CREATE TABLE IF NOT EXISTS receipts (
             ON DELETE CASCADE
             ON UPDATE CASCADE
 );
+
+-- CREATE UNIQUE INDEX customers_phone_number_idx ON customers(phone_number);
+-- CREATE INDEX customers_last_bonus_charge_date_idx ON customers(last_bonus_charge_date);
+-- CREATE INDEX orders_customer_id_idx ON orders(customer_id);
+-- CREATE UNIQUE INDEX spare_parts_article_number_idx ON spare_parts(article_number);
 
 CREATE OR REPLACE VIEW bookings_by_date AS
 SELECT
@@ -377,18 +381,20 @@ CREATE POLICY master_orders_select_policy ON orders
     FOR SELECT
     TO master
     USING (
-        assigned_master_id = (
-            SELECT employee_id
+        EXISTS (
+            SELECT 1
             FROM employees
             WHERE username = current_user
-        ) OR
-        reassigned_master_id = (
-            SELECT employee_id
+              AND employee_id = orders.assigned_master_id
+        )
+        OR
+        EXISTS (
+            SELECT 1
             FROM employees
             WHERE username = current_user
+              AND employee_id = orders.reassigned_master_id
         )
     );
-
 
 CREATE POLICY master_orders_update_policy ON orders
     FOR UPDATE
@@ -441,6 +447,7 @@ CREATE POLICY master_service_centers_select_policy ON service_centers
         )
     );
 
+-- Change me!
 CREATE POLICY manager_employees_select_policy ON employees
     FOR SELECT
     TO manager
@@ -477,6 +484,7 @@ CREATE POLICY manager_customers_select_policy ON customers
     TO manager
     USING (true);
 
+-- Change me!
 CREATE POLICY manager_customers_update_policy ON customers
     FOR UPDATE
     TO manager
@@ -562,8 +570,7 @@ CREATE OR REPLACE FUNCTION create_user(
 	END;
 	$$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION update_loyalty_status()
-RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION update_loyalty_status() RETURNS TRIGGER AS $$
 BEGIN
     IF NEW.spent_money >= 100000 THEN
         NEW.loyalty_status := 'Platinum';
@@ -580,7 +587,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE TRIGGER loyalty_status_update_trigger
-BEFORE UPDATE OF spent_money
+AFTER UPDATE OF spent_money
 ON customers
 FOR EACH ROW
 EXECUTE FUNCTION update_loyalty_status();
