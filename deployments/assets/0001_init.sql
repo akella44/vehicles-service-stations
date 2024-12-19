@@ -136,11 +136,6 @@ CREATE TABLE IF NOT EXISTS receipts (
             ON UPDATE CASCADE
 );
 
--- CREATE UNIQUE INDEX customers_phone_number_idx ON customers(phone_number);
--- CREATE INDEX customers_last_bonus_charge_date_idx ON customers(last_bonus_charge_date);
--- CREATE INDEX orders_customer_id_idx ON orders(customer_id);
--- CREATE UNIQUE INDEX spare_parts_article_number_idx ON spare_parts(article_number);
-
 CREATE OR REPLACE VIEW bookings_by_date AS
 SELECT
     scheduled_date,
@@ -213,15 +208,6 @@ GROUP BY
 ORDER BY
     total_orders DESC;
 
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-CREATE EXTENSION IF NOT EXISTS pg_cron;
-
-ALTER TABLE customers ENABLE ROW LEVEL SECURITY;
-ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
-ALTER TABLE employees ENABLE ROW LEVEL SECURITY;
-ALTER TABLE employee_service_center ENABLE ROW LEVEL SECURITY;
-ALTER TABLE service_centers ENABLE ROW LEVEL SECURITY;
-
 DO $$ BEGIN
     IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'administrator') THEN
         CREATE ROLE administrator CREATEROLE;
@@ -248,6 +234,7 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO administrator;
 GRANT USAGE ON SCHEMA public TO analyst;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO analyst;
 GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO analyst;
+GRANT pg_read_server_files TO analyst;
 GRANT pg_write_server_files TO analyst;
 
 GRANT USAGE ON SCHEMA public TO master;
@@ -275,43 +262,19 @@ GRANT SELECT, UPDATE ON spare_part_order TO manager;
 GRANT SELECT ON stockpile TO manager;
 GRANT SELECT, INSERT, UPDATE ON receipts TO manager; 
 
-CREATE POLICY admin_employees_select_policy ON employees
-    FOR SELECT
+ALTER TABLE customers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE employees ENABLE ROW LEVEL SECURITY;
+ALTER TABLE employee_service_center ENABLE ROW LEVEL SECURITY;
+ALTER TABLE service_centers ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY admin_employees_policies ON employees
+    FOR ALL
     TO administrator
     USING (true);
 
-CREATE POLICY admin_employees_insert_policy ON employees
-    FOR INSERT
-    TO administrator
-    WITH CHECK (true);
-
-CREATE POLICY admin_employees_update_policy ON employees
-    FOR UPDATE
-    TO administrator
-    USING (true);
-
-CREATE POLICY admin_employees_delete_policy ON employees
-    FOR DELETE
-    TO administrator
-    USING (true);
-
-CREATE POLICY admin_employee_service_center_select_policy ON employee_service_center
-    FOR SELECT
-    TO administrator
-    USING (true);
-
-CREATE POLICY admin_employee_service_center_insert_policy ON employee_service_center
-    FOR INSERT
-    TO administrator
-    WITH CHECK (true);
-
-CREATE POLICY admin_employee_service_center_update_policy ON employee_service_center
-    FOR UPDATE
-    TO administrator
-    USING (true);
-
-CREATE POLICY admin_employee_service_center_delete_policy ON employee_service_center
-    FOR DELETE
+CREATE POLICY admin_employee_service_center_policies ON employee_service_center
+    FOR ALL
     TO administrator
     USING (true);
 
@@ -343,7 +306,6 @@ CREATE POLICY admin_customers_insert_policy ON customers
     TO administrator
     WITH CHECK (true);
 
-
 CREATE POLICY admin_customers_update_policy ON customers
     FOR UPDATE
     TO administrator
@@ -355,7 +317,6 @@ CREATE POLICY admin_customers_update_policy ON customers
             JOIN employees e ON esc.employee_id = e.employee_id
             WHERE o.customer_id = customers.customer_id
               AND e.username = current_user
-              AND esc.employee_role = 'Administrator'
         )
     );
 
@@ -381,19 +342,16 @@ CREATE POLICY master_orders_select_policy ON orders
     FOR SELECT
     TO master
     USING (
-        EXISTS (
-            SELECT 1
+        assigned_master_id = (
+            SELECT employee_id
             FROM employees
             WHERE username = current_user
-              AND employee_id = orders.assigned_master_id
-        )
-        OR
-        EXISTS (
-            SELECT 1
+        ) OR
+        reassigned_master_id = (
+            SELECT employee_id
             FROM employees
             WHERE username = current_user
-              AND employee_id = orders.reassigned_master_id
-        )
+        )::integer --here can be null
     );
 
 CREATE POLICY master_orders_update_policy ON orders
@@ -409,7 +367,7 @@ CREATE POLICY master_orders_update_policy ON orders
             SELECT employee_id
             FROM employees
             WHERE username = current_user
-        )
+        )::integer --here can be null
     );
 
 CREATE POLICY master_customers_select_policy ON customers
@@ -429,7 +387,7 @@ CREATE POLICY master_customers_select_policy ON customers
                 SELECT employee_id
                 FROM employees
                 WHERE username = current_user
-              )
+              )::integer
             )
         )
     );
@@ -443,17 +401,10 @@ CREATE POLICY master_service_centers_select_policy ON service_centers
             FROM employee_service_center esc
             JOIN employees e ON esc.employee_id = e.employee_id
             WHERE e.username = current_user
-              AND esc.employee_role = 'Master'
         )
     );
 
--- Change me!
 CREATE POLICY manager_employees_select_policy ON employees
-    FOR SELECT
-    TO manager
-    USING (username = current_user);
-
-CREATE POLICY manager_service_center_select_policy ON employee_service_center
     FOR SELECT
     TO manager
     USING (true);
@@ -461,12 +412,25 @@ CREATE POLICY manager_service_center_select_policy ON employee_service_center
 CREATE POLICY manager_orders_select_policy ON orders
     FOR SELECT
     TO manager
-    USING (true);
+    USING (
+        service_center_id IN (
+            SELECT esc.service_center_id
+            FROM employee_service_center esc
+            JOIN employees e ON esc.employee_id = e.employee_id
+            WHERE e.username = current_user
+        )
+    );
 
 CREATE POLICY manager_orders_insert_policy ON orders
     FOR INSERT
     TO manager
-    WITH CHECK (true);
+    WITH CHECK (
+        manager_id = (
+            SELECT employee_id
+            FROM employees
+            WHERE username = current_user
+        )
+    );
 
 CREATE POLICY manager_orders_update_policy ON orders
     FOR UPDATE
@@ -484,7 +448,6 @@ CREATE POLICY manager_customers_select_policy ON customers
     TO manager
     USING (true);
 
--- Change me!
 CREATE POLICY manager_customers_update_policy ON customers
     FOR UPDATE
     TO manager
@@ -495,11 +458,11 @@ CREATE POLICY manager_customers_insert_policy ON customers
     TO manager
     WITH CHECK (true);
 
-CREATE POLICY manager_service_centers_select_policy ON service_centers
+CREATE POLICY manager_employee_service_center_select_policy ON employee_service_center
     FOR SELECT
     TO manager
     USING (true);
--- Политики для роли аналитик
+
 CREATE POLICY analyst_select_customers_policy ON customers
     FOR SELECT
     TO analyst
@@ -703,6 +666,9 @@ CREATE TRIGGER update_last_bonus_charge_date_trigger
 BEFORE UPDATE OF bonus_points ON customers
 FOR EACH ROW
 EXECUTE FUNCTION update_last_bonus_charge_date();
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS pg_cron;
 
 CREATE OR REPLACE FUNCTION reset_inactive_bonus_points()
 RETURNS VOID AS $$
