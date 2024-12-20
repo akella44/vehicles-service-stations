@@ -264,6 +264,9 @@ GRANT SELECT ON spare_parts TO manager;
 GRANT SELECT, UPDATE ON spare_part_order TO manager;
 GRANT SELECT ON stockpile TO manager;
 GRANT SELECT, INSERT, UPDATE ON receipts TO manager; 
+GRANT USAGE ON SEQUENCE customers_customer_id_seq TO manager;
+GRANT USAGE ON SEQUENCE orders_order_id_seq TO manager;
+GRANT USAGE ON SEQUENCE receipts_receipt_id_seq TO manager;
 
 ALTER TABLE customers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
