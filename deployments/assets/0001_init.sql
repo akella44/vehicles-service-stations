@@ -124,7 +124,7 @@ CREATE TABLE IF NOT EXISTS spare_part_order (
 
 CREATE TABLE IF NOT EXISTS receipts (
     receipt_id SERIAL PRIMARY KEY,
-    order_id INT NOT NULL   ,
+    order_id INT NOT NULL UNIQUE,
     bonus_points_spent NUMERIC(12, 2) NOT NULL DEFAULT 0 CHECK (bonus_points_spent >= 0),
     total_paid NUMERIC(12, 2) NOT NULL DEFAULT 0 CHECK (total_paid >= 0),
     receipt_date TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -135,6 +135,9 @@ CREATE TABLE IF NOT EXISTS receipts (
             ON DELETE CASCADE
             ON UPDATE CASCADE
 );
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS pg_cron;
 
 CREATE OR REPLACE VIEW bookings_by_date AS
 SELECT
@@ -404,10 +407,65 @@ CREATE POLICY master_service_centers_select_policy ON service_centers
         )
     );
 
-CREATE POLICY manager_employees_select_policy ON employees
+-- CREATE OR REPLACE VIEW service_center_staff AS
+-- SELECT employee_id 
+-- FROM employee_service_center
+-- WHERE service_center_id IN (
+--     SELECT esc_mgr.service_center_id
+--     FROM employee_service_center esc_mgr
+--     JOIN employees e_mgr ON esc_mgr.employee_id = e_mgr.employee_id
+--     WHERE e_mgr.username = current_user
+-- );
+
+-- GRANT SELECT ON service_center_staff TO manager;
+
+CREATE OR REPLACE FUNCTION get_service_center_staff()
+RETURNS TABLE(employee_id INTEGER)
+LANGUAGE SQL
+SECURITY DEFINER
+AS $$
+    SELECT es.employee_id
+    FROM employee_service_center es
+    WHERE es.service_center_id IN (
+        SELECT esc_mgr.service_center_id
+        FROM employee_service_center esc_mgr
+        JOIN employees e_mgr ON esc_mgr.employee_id = e_mgr.employee_id
+        WHERE e_mgr.username = session_user
+    );
+$$;
+
+ALTER FUNCTION get_service_center_staff() OWNER TO administrator;
+GRANT EXECUTE ON FUNCTION get_service_center_staff() TO manager;
+
+CREATE POLICY manager_employees_select_policy ON employees 
     FOR SELECT
     TO manager
-    USING (true);
+    USING (
+        employee_id IN (
+            SELECT employee_id FROM get_service_center_staff()
+        )
+    );
+
+CREATE POLICY manager_service_centers_select_policy ON service_centers
+    FOR SELECT
+    TO manager
+    USING (
+        service_center_id IN (
+            SELECT esc.service_center_id
+            FROM employee_service_center esc
+            JOIN employees e ON esc.employee_id = e.employee_id
+            WHERE e.username = current_user
+        )
+    );
+
+CREATE POLICY manager_employee_service_center_select_policy ON employee_service_center
+    FOR SELECT
+    TO manager
+    USING (
+        employee_id IN (
+            SELECT employee_id FROM get_service_center_staff()
+        )
+    );
 
 CREATE POLICY manager_orders_select_policy ON orders
     FOR SELECT
@@ -458,11 +516,6 @@ CREATE POLICY manager_customers_insert_policy ON customers
     TO manager
     WITH CHECK (true);
 
-CREATE POLICY manager_employee_service_center_select_policy ON employee_service_center
-    FOR SELECT
-    TO manager
-    USING (true);
-
 CREATE POLICY analyst_select_customers_policy ON customers
     FOR SELECT
     TO analyst
@@ -503,16 +556,6 @@ CREATE OR REPLACE FUNCTION create_user(
 		hashed_password VARCHAR(255);
 		new_employee_id INT;
 	BEGIN
-		IF NOT EXISTS (
-			SELECT 1
-			FROM employees e
-			JOIN employee_service_center esc ON e.employee_id = esc.employee_id
-			WHERE e.username = current_user
-			AND esc.employee_role = 'Administrator'
-		) THEN
-			RAISE EXCEPTION 'Only administrators can create new users';
-		END IF;
-
 		SELECT crypt(p_password, gen_salt('bf')) INTO hashed_password;
 
 		INSERT INTO employees (
@@ -532,6 +575,9 @@ CREATE OR REPLACE FUNCTION create_user(
 		EXECUTE format('GRANT %I TO %I', LOWER(p_role::TEXT), p_username);
 	END;
 	$$ LANGUAGE plpgsql;
+
+REVOKE EXECUTE ON FUNCTION create_user(VARCHAR, INT, INT, NUMERIC, VARCHAR, TEXT, employee_role, INT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION create_user(VARCHAR, INT, INT, NUMERIC, VARCHAR, TEXT, employee_role, INT) TO administrator;
 
 CREATE OR REPLACE FUNCTION update_loyalty_status() RETURNS TRIGGER AS $$
 BEGIN
@@ -667,28 +713,6 @@ BEFORE UPDATE OF bonus_points ON customers
 FOR EACH ROW
 EXECUTE FUNCTION update_last_bonus_charge_date();
 
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-CREATE EXTENSION IF NOT EXISTS pg_cron;
-
-CREATE OR REPLACE FUNCTION reset_inactive_bonus_points()
-RETURNS VOID AS $$
-BEGIN
-    UPDATE customers
-    SET bonus_points = 0,
-        last_bonus_charge_date = CURRENT_TIMESTAMP
-    WHERE last_bonus_charge_date < (CURRENT_TIMESTAMP - INTERVAL '1 year')
-      AND bonus_points > 0;
-    
-    RAISE NOTICE 'Bonus points reset for customers with no activity in the last year.';
-END;
-$$ LANGUAGE plpgsql;
-
-SELECT cron.schedule(
-    'reset_bonus_points',
-    '0 0 * * *',
-    'SELECT reset_inactive_bonus_points();'
-);
-
 CREATE OR REPLACE FUNCTION update_employees_count()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -740,4 +764,23 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER check_spare_part_stock_trigger
 BEFORE INSERT ON spare_part_order
 FOR EACH ROW
-EXECUTE FUNCTION check_spare_part_stock()
+EXECUTE FUNCTION check_spare_part_stock();
+
+CREATE OR REPLACE FUNCTION reset_inactive_bonus_points()
+RETURNS VOID AS $$
+BEGIN
+    UPDATE customers
+    SET bonus_points = 0,
+        last_bonus_charge_date = CURRENT_TIMESTAMP
+    WHERE last_bonus_charge_date < (CURRENT_TIMESTAMP - INTERVAL '1 year')
+      AND bonus_points > 0;
+    
+    RAISE NOTICE 'Bonus points reset for customers with no activity in the last year.';
+END;
+$$ LANGUAGE plpgsql;
+
+SELECT cron.schedule(
+    'reset_bonus_points',
+    '0 0 * * *',
+    'SELECT reset_inactive_bonus_points();'
+);
