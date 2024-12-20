@@ -298,7 +298,6 @@ CREATE POLICY admin_service_centers_update_policy ON service_centers
             FROM employee_service_center esc
             JOIN employees e ON esc.employee_id = e.employee_id
             WHERE e.username = current_user
-              AND esc.employee_role = 'Administrator'
         )
     );
 
@@ -787,3 +786,47 @@ SELECT cron.schedule(
     '0 0 * * *',
     'SELECT reset_inactive_bonus_points();'
 );
+
+CREATE OR REPLACE FUNCTION check_and_suggest_alternative_slot(
+    p_assigned_master_id INT,
+    p_scheduled_date TIMESTAMP
+) RETURNS TIMESTAMP AS $$
+DECLARE
+    alternative_time TIMESTAMP;
+BEGIN
+    PERFORM 1
+    FROM orders
+    WHERE assigned_master_id = p_assigned_master_id
+      AND status IN ('In Progress', 'Pending')
+      AND (p_scheduled_date, p_scheduled_date + INTERVAL '1 hour') OVERLAPS (scheduled_date, scheduled_date + INTERVAL '1 hour');
+
+    IF FOUND THEN
+        SELECT MAX(scheduled_date + INTERVAL '1 hour') INTO alternative_time
+        FROM orders
+        WHERE assigned_master_id = p_assigned_master_id;
+
+        RETURN COALESCE(alternative_time, p_scheduled_date + INTERVAL '1 hour');
+    ELSE
+        RETURN p_scheduled_date;
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION before_order_insert()
+RETURNS TRIGGER AS $$
+DECLARE
+    alternative_time TIMESTAMP;
+BEGIN
+    alternative_time := check_and_suggest_alternative_slot(NEW.assigned_master_id, NEW.scheduled_date);
+    IF alternative_time != NEW.scheduled_date THEN
+        RAISE EXCEPTION 'Мастер занят! Предлагаем ближайший свободный слот: %', alternative_time;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_before_order_insert
+BEFORE INSERT ON orders
+FOR EACH ROW
+EXECUTE FUNCTION before_order_insert();
